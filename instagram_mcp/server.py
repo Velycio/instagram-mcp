@@ -45,6 +45,31 @@ from instagram_mcp import validators as V
 
 mcp = FastMCP("instagram-mcp")
 
+# Tell ChatGPT which tools only read data and which can change an account or
+# affect Instagram. This is metadata for the MCP client; validation still
+# happens inside each tool.
+_WRITE_TOOLS = frozenset({
+    "add_account", "set_default_account", "remove_account",
+    "publish_image", "publish_video", "publish_reel",
+    "publish_carousel", "publish_story",
+    "reply_to_comment", "hide_comment", "delete_comment",
+    "send_message",
+})
+
+_DESTRUCTIVE_TOOLS = frozenset({"remove_account", "delete_comment"})
+
+
+def kalma_tool():
+    """Register a tool with accurate read/write metadata for ChatGPT."""
+    def decorate(fn: Any) -> Any:
+        is_write = fn.__name__ in _WRITE_TOOLS
+        return mcp.tool(annotations={
+            "readOnlyHint": not is_write,
+            "openWorldHint": is_write,
+            "destructiveHint": fn.__name__ in _DESTRUCTIVE_TOOLS,
+        })(fn)
+    return decorate
+
 # ----------------------------- field selections ----------------------------- #
 PROFILE_FIELDS = ("id,username,name,biography,followers_count,follows_count,"
                   "media_count,profile_picture_url,website")
@@ -142,7 +167,7 @@ def _publish_container(client: graph_client.GraphClient, ig_user_id: str, contai
 
 # ============================ HEALTH + ACCOUNTS ============================ #
 
-@mcp.tool()
+@kalma_tool()
 def healthcheck() -> dict[str, Any]:
     """Verify the MCP is configured + ready: accounts present, token backend, Graph reachability.
 
@@ -178,14 +203,14 @@ def healthcheck() -> dict[str, Any]:
     return _guard("healthcheck", {}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def list_accounts() -> dict[str, Any]:
     """List configured Instagram accounts (labels + ig_user_id + default flag). Never returns tokens."""
     return _guard("list_accounts", {}, lambda: {"ok": True, "accounts": auth.list_accounts(),
                                                  "count": len(auth.list_accounts())})
 
 
-@mcp.tool()
+@kalma_tool()
 def add_account(label: str, access_token: str, ig_user_id: str,
                 *, app_secret: str | None = None, make_default: bool = False) -> dict[str, Any]:
     """Store an Instagram Business/Creator account for use by every tool.
@@ -214,21 +239,21 @@ def add_account(label: str, access_token: str, ig_user_id: str,
     return _guard("add_account", redacted, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def set_default_account(label: str) -> dict[str, Any]:
     """Set which configured account is used when a tool's `account` arg is omitted."""
     return _guard("set_default_account", {"label": label},
                   lambda: {"ok": True, **auth.set_default(V.validate_account_label(label))})
 
 
-@mcp.tool()
+@kalma_tool()
 def remove_account(label: str) -> dict[str, Any]:
     """Remove a configured account + delete its stored token from the keychain."""
     return _guard("remove_account", {"label": label},
                   lambda: {"ok": True, **auth.remove_account(V.validate_account_label(label))})
 
 
-@mcp.tool()
+@kalma_tool()
 def account_info(account: str | None = None) -> dict[str, Any]:
     """Live profile snapshot for one account: username, name, followers, media count, etc."""
     def _impl() -> dict[str, Any]:
@@ -240,7 +265,7 @@ def account_info(account: str | None = None) -> dict[str, Any]:
 
 # ============================ PROFILE + MEDIA ============================ #
 
-@mcp.tool()
+@kalma_tool()
 def get_profile(account: str | None = None) -> dict[str, Any]:
     """Return the account's public profile fields (followers, follows, media count, bio, website)."""
     def _impl() -> dict[str, Any]:
@@ -249,7 +274,7 @@ def get_profile(account: str | None = None) -> dict[str, Any]:
     return _guard("get_profile", {"account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def list_media(account: str | None = None, *, limit: int = 25) -> dict[str, Any]:
     """List recent media (posts/reels) for the account, newest first. limit 1-100 (default 25)."""
     def _impl() -> dict[str, Any]:
@@ -261,7 +286,7 @@ def list_media(account: str | None = None, *, limit: int = 25) -> dict[str, Any]
     return _guard("list_media", {"account": account, "limit": limit}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_media(media_id: str, account: str | None = None) -> dict[str, Any]:
     """Return full fields for one media object by id (caption, type, permalink, like/comment counts)."""
     def _impl() -> dict[str, Any]:
@@ -273,7 +298,7 @@ def get_media(media_id: str, account: str | None = None) -> dict[str, Any]:
 
 # ================================ INSIGHTS ================================ #
 
-@mcp.tool()
+@kalma_tool()
 def get_account_insights(account: str | None = None, *, metrics: str | None = None,
                          period: str = "day") -> dict[str, Any]:
     """Account-level analytics (reach, impressions, profile views, follower count).
@@ -291,7 +316,7 @@ def get_account_insights(account: str | None = None, *, metrics: str | None = No
     return _guard("get_account_insights", {"account": account, "metrics": metrics, "period": period}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_media_insights(media_id: str, account: str | None = None, *, metrics: str | None = None) -> dict[str, Any]:
     """Per-post analytics (reach, saves, likes, comments, shares, total interactions).
 
@@ -307,7 +332,7 @@ def get_media_insights(media_id: str, account: str | None = None, *, metrics: st
     return _guard("get_media_insights", {"media_id": media_id, "account": account, "metrics": metrics}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_audience_insights(account: str | None = None, *, metric: str | None = None,
                           period: str = "lifetime", metric_type: str = "total_value",
                           breakdown: str | None = "age,gender,country,city",
@@ -336,7 +361,7 @@ def get_audience_insights(account: str | None = None, *, metric: str | None = No
 
 # =============================== PUBLISHING =============================== #
 
-@mcp.tool()
+@kalma_tool()
 def publishing_limit(account: str | None = None) -> dict[str, Any]:
     """Remaining posts in the rolling 24h publishing quota (Instagram caps API posts/day)."""
     def _impl() -> dict[str, Any]:
@@ -347,7 +372,7 @@ def publishing_limit(account: str | None = None) -> dict[str, Any]:
     return _guard("publishing_limit", {"account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def publish_image(image_url: str, caption: str | None = None, account: str | None = None) -> dict[str, Any]:
     """Publish a single image to the feed.
 
@@ -365,7 +390,7 @@ def publish_image(image_url: str, caption: str | None = None, account: str | Non
                                     "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def publish_video(video_url: str, caption: str | None = None, account: str | None = None) -> dict[str, Any]:
     """Publish a video to the feed. video_url must be a PUBLIC https URL.
 
@@ -383,7 +408,7 @@ def publish_video(video_url: str, caption: str | None = None, account: str | Non
                                     "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def publish_reel(video_url: str, caption: str | None = None, account: str | None = None,
                  *, share_to_feed: bool = True, cover_url: str | None = None) -> dict[str, Any]:
     """Publish a Reel. video_url must be a PUBLIC https URL.
@@ -405,7 +430,7 @@ def publish_reel(video_url: str, caption: str | None = None, account: str | None
                                    "share_to_feed": share_to_feed, "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def publish_carousel(image_urls: list[str], caption: str | None = None,
                      account: str | None = None) -> dict[str, Any]:
     """Publish a multi-image carousel (2-10 images). Each image_url must be a PUBLIC https URL.
@@ -431,7 +456,7 @@ def publish_carousel(image_urls: list[str], caption: str | None = None,
                                        "caption": V.truncate(caption or ""), "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def publish_story(image_url: str | None = None, video_url: str | None = None,
                   account: str | None = None) -> dict[str, Any]:
     """Publish a Story (image OR video). Exactly one of image_url / video_url, PUBLIC https."""
@@ -454,7 +479,7 @@ def publish_story(image_url: str | None = None, video_url: str | None = None,
 
 # ================================ COMMENTS ================================ #
 
-@mcp.tool()
+@kalma_tool()
 def get_comments(media_id: str, account: str | None = None, *, limit: int = 25) -> dict[str, Any]:
     """List comments on a media object (text, username, timestamp, like_count, hidden)."""
     def _impl() -> dict[str, Any]:
@@ -466,7 +491,7 @@ def get_comments(media_id: str, account: str | None = None, *, limit: int = 25) 
     return _guard("get_comments", {"media_id": media_id, "account": account, "limit": limit}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def reply_to_comment(comment_id: str, message: str, account: str | None = None) -> dict[str, Any]:
     """Reply to a comment. message <= 2200 chars. Returns the new comment id."""
     def _impl() -> dict[str, Any]:
@@ -481,7 +506,7 @@ def reply_to_comment(comment_id: str, message: str, account: str | None = None) 
                                        "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def hide_comment(comment_id: str, hide: bool = True, account: str | None = None) -> dict[str, Any]:
     """Hide (or unhide) a comment from public view. hide=false unhides."""
     def _impl() -> dict[str, Any]:
@@ -492,7 +517,7 @@ def hide_comment(comment_id: str, hide: bool = True, account: str | None = None)
     return _guard("hide_comment", {"comment_id": comment_id, "hide": hide, "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def delete_comment(comment_id: str, account: str | None = None) -> dict[str, Any]:
     """Permanently delete a comment you own (or a comment on your media). Irreversible."""
     def _impl() -> dict[str, Any]:
@@ -505,7 +530,7 @@ def delete_comment(comment_id: str, account: str | None = None) -> dict[str, Any
 
 # ================================ DISCOVERY ================================ #
 
-@mcp.tool()
+@kalma_tool()
 def search_hashtag(hashtag: str, account: str | None = None) -> dict[str, Any]:
     """Resolve a hashtag name to its Graph id (needed before get_hashtag_media)."""
     def _impl() -> dict[str, Any]:
@@ -516,7 +541,7 @@ def search_hashtag(hashtag: str, account: str | None = None) -> dict[str, Any]:
     return _guard("search_hashtag", {"hashtag": hashtag, "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_hashtag_media(hashtag_id: str, account: str | None = None, *,
                       edge: str = "top_media", limit: int = 25) -> dict[str, Any]:
     """Recent or top media for a hashtag id. edge=top_media|recent_media. limit 1-100.
@@ -538,7 +563,7 @@ def get_hashtag_media(hashtag_id: str, account: str | None = None, *,
                                         "account": account}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_mentions(account: str | None = None, *, limit: int = 25) -> dict[str, Any]:
     """List recent media where the account is @-mentioned (tags edge)."""
     def _impl() -> dict[str, Any]:
@@ -549,7 +574,7 @@ def get_mentions(account: str | None = None, *, limit: int = 25) -> dict[str, An
     return _guard("get_mentions", {"account": account, "limit": limit}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def business_discovery(username: str, account: str | None = None, *, with_media: bool = False,
                        media_limit: int = 12) -> dict[str, Any]:
     """Public profile + (optionally) recent media for ANY business/creator account by username.
@@ -579,7 +604,7 @@ def business_discovery(username: str, account: str | None = None, *, with_media:
 # with the app-review hint unless INSTAGRAM_MCP_DM_ENABLED=1 AND the token carries
 # the scope. Scaffolded (not stubbed) so enabling is a one-flag flip post-approval.
 
-@mcp.tool()
+@kalma_tool()
 def list_conversations(account: str | None = None, *, limit: int = 25) -> dict[str, Any]:
     """List Instagram DM conversations. REQUIRES Meta App Review (instagram_manage_messages)."""
     def _impl() -> dict[str, Any]:
@@ -592,7 +617,7 @@ def list_conversations(account: str | None = None, *, limit: int = 25) -> dict[s
     return _guard("list_conversations", {"account": account, "limit": limit}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def get_messages(conversation_id: str, account: str | None = None, *, limit: int = 25) -> dict[str, Any]:
     """Read messages in a DM conversation. REQUIRES Meta App Review (instagram_manage_messages)."""
     def _impl() -> dict[str, Any]:
@@ -606,7 +631,7 @@ def get_messages(conversation_id: str, account: str | None = None, *, limit: int
     return _guard("get_messages", {"conversation_id": conversation_id, "account": account, "limit": limit}, _impl)
 
 
-@mcp.tool()
+@kalma_tool()
 def send_message(recipient_id: str, text: str, account: str | None = None) -> dict[str, Any]:
     """Send a DM. REQUIRES Meta App Review + the 24-hour standard-messaging window.
 
